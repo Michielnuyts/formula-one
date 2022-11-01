@@ -2,21 +2,18 @@ mod errors;
 
 use self::errors::ClashesWithExistingBet;
 use crate::teams::Driver;
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-};
+use std::collections::HashMap;
 
 pub type PlayerName = String;
 
-#[derive(Eq, Hash, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug)]
 pub struct Player {
     name: PlayerName,
     multiplier: u8, // x3, x5, ...
 }
 
 /// The selection of possible things a player can bet on
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BetType {
     /// At which position does a driver finish the race
     Position { driver: Driver, position: u8 },
@@ -31,14 +28,14 @@ pub enum BetType {
 }
 
 /// The state of a single bet
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bet {
-    r#type: BetType,
+    kind: BetType,
     reward: u64, // 10.000
 }
 
 pub struct BettingTable {
-    placed_bets: HashMap<PlayerName, HashSet<Bet>>,
+    placed_bets: HashMap<PlayerName, Vec<Bet>>,
 }
 
 impl BettingTable {
@@ -47,19 +44,47 @@ impl BettingTable {
             placed_bets: HashMap::new(),
         }
     }
-    pub fn place(&mut self, bet: Bet, player: PlayerName) -> Result<Bet, ClashesWithExistingBet> {
-        if self
-            .placed_bets
-            .entry(player)
-            .or_insert_with(HashSet::new)
-            .insert(bet.clone())
-        {
+    pub fn place(&mut self, bet: Bet, player: &PlayerName) -> Result<Bet, ClashesWithExistingBet> {
+        if self.is_bet_valid(&bet.kind, player) {
+            self.placed_bets
+                .entry(player.clone())
+                .or_insert_with(Vec::new)
+                .push(bet.clone());
+
             return Ok(bet);
         }
 
         Err(ClashesWithExistingBet {
             existing_bet: Bet { ..bet },
         })
+    }
+    fn is_bet_valid(&self, bet_type: &BetType, player: &PlayerName) -> bool {
+        let existing_bets = self.get_bets_for(player);
+
+        match bet_type {
+            BetType::Position { driver, position } => !existing_bets.iter().any(|bet| {
+                bet.kind
+                    == BetType::Position {
+                        driver: *driver,
+                        position: *position,
+                    }
+            }),
+            BetType::DNF(driver) => !existing_bets
+                .iter()
+                .any(|bet| bet.kind == BetType::DNF(*driver)),
+            BetType::DriverOfTheDay(driver) => !existing_bets
+                .iter()
+                .any(|bet| bet.kind == BetType::DriverOfTheDay(*driver)),
+            BetType::FastestLap(driver) => !existing_bets
+                .iter()
+                .any(|bet| bet.kind == BetType::FastestLap(*driver)),
+            BetType::WillHaveSafetyCar(val) => !existing_bets
+                .iter()
+                .any(|bet| bet.kind == BetType::WillHaveSafetyCar(*val)),
+        }
+    }
+    fn get_bets_for(&self, player: &PlayerName) -> Vec<Bet> {
+        self.placed_bets.get(player).unwrap_or(&vec![]).clone()
     }
 }
 
@@ -77,9 +102,9 @@ mod tests {
         let player = PlayerName::from("Nuyts");
         let bet = Bet {
             reward: 100_000,
-            r#type: BetType::DNF(Driver::ALB),
+            kind: BetType::DNF(Driver::ALB),
         };
-        let result = betting_table.place(bet, player);
+        let result = betting_table.place(bet, &player);
 
         assert!(result.is_ok())
     }
@@ -89,13 +114,13 @@ mod tests {
         let player = PlayerName::from("Nuyts");
         let bet = Bet {
             reward: 100_000,
-            r#type: BetType::DNF(Driver::ALB),
+            kind: BetType::DNF(Driver::ALB),
         };
-        let result = betting_table.place(bet.clone(), player.clone());
+        let result = betting_table.place(bet.clone(), &player);
         // So far so good
         assert!(result.is_ok());
         // Place the same bet again
-        let result = betting_table.place(bet.clone(), player);
+        let result = betting_table.place(bet.clone(), &player);
         assert_eq!(
             result.unwrap_err(),
             ClashesWithExistingBet { existing_bet: bet }
@@ -107,41 +132,34 @@ mod tests {
         let player = PlayerName::from("Nuyts");
         let first_bet = Bet {
             reward: 100_000,
-            r#type: BetType::DNF(Driver::ALB),
+            kind: BetType::DNF(Driver::ALB),
         };
         let second_bet = Bet {
             reward: 100_000,
-            r#type: BetType::DNF(Driver::PER),
+            kind: BetType::DNF(Driver::PER),
         };
 
-        let result = betting_table.place(first_bet, player.clone());
+        let result = betting_table.place(first_bet, &player);
         assert!(result.is_ok());
-        let result = betting_table.place(second_bet, player);
+        let result = betting_table.place(second_bet, &player);
         assert!(result.is_ok());
     }
     #[test]
-    fn this_will_pass_but_we_need_to_fix_this() {
+    fn single_player_cannot_place_multiple_unique_bets_with_only_reward_changed() {
         let mut betting_table = BettingTable::new();
         let player = PlayerName::from("Nuyts");
         let first_bet = Bet {
-            reward: 100_000,                   // Different amount
-            r#type: BetType::DNF(Driver::ALB), // Same bet
+            reward: 100_000,                 // Different amount
+            kind: BetType::DNF(Driver::ALB), // Same bet
         };
         let second_bet = Bet {
-            reward: 99,                        // Different amount
-            r#type: BetType::DNF(Driver::ALB), // Same bet
+            reward: 99,                      // Different amount
+            kind: BetType::DNF(Driver::ALB), // Same bet
         };
 
-        let result = betting_table.place(first_bet, player.clone());
+        let result = betting_table.place(first_bet, &player);
         assert!(result.is_ok());
-        let result = betting_table.place(second_bet, player);
-        // !This should give us an error!!
+        let result = betting_table.place(second_bet, &player);
         assert!(result.is_err());
-
-        // TODO: This gets allowed to insert, because of the different reward amount...
-        // I don't think we need a HashSet for this, we need to assert the validness of a bet ourselves
-        // by using a match, because each type of bet will have slightly different rules...
-        // You can bet on multiple DNF, but there can only be one driver finishing at one position,
-        // or there can only be one driver of the day....
     }
 }
