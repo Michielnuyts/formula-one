@@ -12,29 +12,44 @@ pub struct Player {
     multiplier: u8, // x3, x5, ...
 }
 
-/// The selection of possible things a player can bet on
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum BetType {
+/// Position on the race grid, always from 1 up to 20
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Position(u8);
+
+impl Position {
+    pub fn new(position: u8) -> Self {
+        match position {
+            1..=20 => Self(position),
+            _ => panic!("Wrong input for position"),
+        }
+    }
+}
+
+/// Possible things a player can bet on
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum Bet {
     /// At which position does a driver finish the race
-    Position { driver: Driver, position: u8 },
-    /// A driver does not finish the race
-    DNF(Driver),
+    FinishPosition { driver: Driver, position: Position },
+    /// Which driver does not finish the race
+    DoesNotFinish(Driver),
     /// Which driver has the fastest lap at end of race
     FastestLap(Driver),
-    /// What driver gets voted as driver of the day
+    /// Which driver gets voted as driver of the day
     DriverOfTheDay(Driver),
     /// Will there be a Safety Car?
     WillHaveSafetyCar(bool),
 }
 
-/// The state of a single bet
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Bet {
-    kind: BetType,
-    reward: u64, // 10.000
+/// The current state or the eventual outcome of a certain bet
+/// Will be used to track live results on all matching bets
+/// and to calculate final winnings after the race
+pub struct BetOutcome {
+    outcome: Bet,
+    reward: u64,
 }
 
 pub struct BettingTable {
+    /// The placed bets indexed by the playerName
     placed_bets: HashMap<PlayerName, Vec<Bet>>,
 }
 
@@ -45,42 +60,61 @@ impl BettingTable {
         }
     }
     pub fn place(&mut self, bet: Bet, player: &PlayerName) -> Result<Bet, ClashesWithExistingBet> {
-        if self.is_bet_valid(&bet.kind, player) {
+        if self.is_bet_valid(&bet, player) {
             self.placed_bets
                 .entry(player.clone())
                 .or_insert_with(Vec::new)
-                .push(bet.clone());
+                .push(bet);
 
             return Ok(bet);
         }
 
-        Err(ClashesWithExistingBet {
-            existing_bet: Bet { ..bet },
-        })
+        Err(ClashesWithExistingBet { existing_bet: bet })
     }
-    fn is_bet_valid(&self, bet_type: &BetType, player: &PlayerName) -> bool {
+    fn is_bet_valid(&self, bet_type: &Bet, player: &PlayerName) -> bool {
         let existing_bets = self.get_bets_for(player);
 
+        use Bet::*;
         match bet_type {
-            BetType::Position { driver, position } => !existing_bets.iter().any(|bet| {
-                bet.kind
-                    == BetType::Position {
-                        driver: *driver,
-                        position: *position,
-                    }
-            }),
-            BetType::DNF(driver) => !existing_bets
+            FinishPosition { driver, position } => {
+                if existing_bets.is_empty() {
+                    return true;
+                }
+
+                let is_driver_free = existing_bets.iter().any(|x| match *x {
+                    FinishPosition {
+                        driver: inner_driver,
+                        position: _,
+                    } => *driver != inner_driver,
+                    _ => true,
+                });
+
+                let is_position_free = existing_bets.iter().any(|x| match *x {
+                    FinishPosition {
+                        driver: _,
+                        position: inner_position,
+                    } => *position != inner_position,
+                    _ => true,
+                });
+
+                is_driver_free && is_position_free
+            }
+            DoesNotFinish(driver) => !existing_bets
                 .iter()
-                .any(|bet| bet.kind == BetType::DNF(*driver)),
-            BetType::DriverOfTheDay(driver) => !existing_bets
+                .any(|bet| bet == &DoesNotFinish(*driver)),
+            DriverOfTheDay(driver) => !existing_bets
                 .iter()
-                .any(|bet| bet.kind == BetType::DriverOfTheDay(*driver)),
-            BetType::FastestLap(driver) => !existing_bets
-                .iter()
-                .any(|bet| bet.kind == BetType::FastestLap(*driver)),
-            BetType::WillHaveSafetyCar(val) => !existing_bets
-                .iter()
-                .any(|bet| bet.kind == BetType::WillHaveSafetyCar(*val)),
+                .any(|bet| bet == &DriverOfTheDay(*driver)),
+            FastestLap(driver) => !existing_bets.iter().any(|bet| bet == &FastestLap(*driver)),
+            WillHaveSafetyCar(_val) => {
+                existing_bets
+                    .iter()
+                    .filter(|&bet| {
+                        bet == &WillHaveSafetyCar(true) || bet == &WillHaveSafetyCar(false)
+                    })
+                    .count()
+                    == 0
+            }
         }
     }
     fn get_bets_for(&self, player: &PlayerName) -> Vec<Bet> {
@@ -90,9 +124,9 @@ impl BettingTable {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bet, BetType, BettingTable};
+    use super::{Bet, BettingTable};
     use crate::{
-        bets::{errors::ClashesWithExistingBet, PlayerName},
+        bets::{errors::ClashesWithExistingBet, PlayerName, Position},
         teams::Driver,
     };
 
@@ -100,10 +134,7 @@ mod tests {
     fn can_place_a_bet() {
         let mut betting_table = BettingTable::new();
         let player = PlayerName::from("Nuyts");
-        let bet = Bet {
-            reward: 100_000,
-            kind: BetType::DNF(Driver::ALB),
-        };
+        let bet = Bet::DoesNotFinish(Driver::ALB);
         let result = betting_table.place(bet, &player);
 
         assert!(result.is_ok())
@@ -112,15 +143,12 @@ mod tests {
     fn cannot_place_the_same_bet_more_than_once() {
         let mut betting_table = BettingTable::new();
         let player = PlayerName::from("Nuyts");
-        let bet = Bet {
-            reward: 100_000,
-            kind: BetType::DNF(Driver::ALB),
-        };
-        let result = betting_table.place(bet.clone(), &player);
+        let bet = Bet::DoesNotFinish(Driver::ALB);
+        let result = betting_table.place(bet, &player);
         // So far so good
         assert!(result.is_ok());
         // Place the same bet again
-        let result = betting_table.place(bet.clone(), &player);
+        let result = betting_table.place(bet, &player);
         assert_eq!(
             result.unwrap_err(),
             ClashesWithExistingBet { existing_bet: bet }
@@ -130,36 +158,71 @@ mod tests {
     fn single_player_can_place_multiple_unique_bets() {
         let mut betting_table = BettingTable::new();
         let player = PlayerName::from("Nuyts");
-        let first_bet = Bet {
-            reward: 100_000,
-            kind: BetType::DNF(Driver::ALB),
-        };
-        let second_bet = Bet {
-            reward: 100_000,
-            kind: BetType::DNF(Driver::PER),
-        };
+        let first_bet = Bet::DoesNotFinish(Driver::ALB);
 
         let result = betting_table.place(first_bet, &player);
         assert!(result.is_ok());
+
+        let second_bet = Bet::DoesNotFinish(Driver::PER);
         let result = betting_table.place(second_bet, &player);
         assert!(result.is_ok());
     }
     #[test]
-    fn single_player_cannot_place_multiple_unique_bets_with_only_reward_changed() {
+    fn single_player_can_only_bet_once_on_safety_car() {
         let mut betting_table = BettingTable::new();
         let player = PlayerName::from("Nuyts");
-        let first_bet = Bet {
-            reward: 100_000,                 // Different amount
-            kind: BetType::DNF(Driver::ALB), // Same bet
-        };
-        let second_bet = Bet {
-            reward: 99,                      // Different amount
-            kind: BetType::DNF(Driver::ALB), // Same bet
+        let first_bet = Bet::WillHaveSafetyCar(true);
+
+        let result = betting_table.place(first_bet, &player);
+        assert!(result.is_ok());
+
+        let second_bet = Bet::WillHaveSafetyCar(false);
+        let result = betting_table.place(second_bet, &player);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn cannot_bet_on_multiple_finish_positions_for_the_same_driver() {
+        let mut betting_table = BettingTable::new();
+        let player = PlayerName::from("Nuyts");
+        let first_bet = Bet::FinishPosition {
+            driver: Driver::HAM,
+            position: Position::new(1),
         };
 
         let result = betting_table.place(first_bet, &player);
         assert!(result.is_ok());
+
+        let second_bet = Bet::FinishPosition {
+            driver: Driver::HAM, // We already did a bet on HAM finishing first, not allowed
+            position: Position::new(2),
+        };
         let result = betting_table.place(second_bet, &player);
         assert!(result.is_err());
+    }
+    #[test]
+    fn cannot_bet_on_multiple_finish_positions() {
+        let mut betting_table = BettingTable::new();
+        let player = PlayerName::from("Nuyts");
+        let first_bet = Bet::FinishPosition {
+            driver: Driver::LEC,
+            position: Position::new(1),
+        };
+
+        let result = betting_table.place(first_bet, &player);
+        assert!(result.is_ok());
+
+        let second_bet = Bet::FinishPosition {
+            driver: Driver::HAM,
+            position: Position::new(1), // Already placed bet on LEC for position 1
+        };
+        let result = betting_table.place(second_bet, &player);
+        assert!(result.is_err());
+
+        let third_bet = Bet::FinishPosition {
+            driver: Driver::HAM,
+            position: Position::new(2), // This is valid again
+        };
+        let result = betting_table.place(third_bet, &player);
+        assert!(result.is_ok());
     }
 }

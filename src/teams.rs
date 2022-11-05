@@ -1,5 +1,5 @@
 /// List of all current drivers, can possibly change over time
-#[derive(Debug, Clone, Eq, PartialEq, Copy)]
+#[derive(Debug, Clone, Eq, PartialEq, Copy, Hash)]
 pub enum Driver {
     VER,
     PER,
