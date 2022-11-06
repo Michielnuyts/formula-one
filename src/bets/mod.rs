@@ -2,7 +2,7 @@ mod errors;
 
 use self::errors::ClashesWithExistingBet;
 use crate::teams::Driver;
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::discriminant};
 
 pub type PlayerName = String;
 
@@ -43,7 +43,7 @@ pub enum Bet {
 /// The current state or the eventual outcome of a certain bet
 /// Will be used to track live results on all matching bets
 /// and to calculate final winnings after the race
-pub struct BetOutcome {
+pub struct Outcome {
     outcome: Bet,
     reward: u64,
 }
@@ -51,14 +51,23 @@ pub struct BetOutcome {
 pub struct BettingTable {
     /// The placed bets indexed by the playerName
     placed_bets: HashMap<PlayerName, Vec<Bet>>,
+    /// The eventual outcomes after/during a race
+    outcomes: Vec<Outcome>,
 }
 
 impl BettingTable {
+    /// Create a new betting table
     pub fn new() -> Self {
         Self {
             placed_bets: HashMap::new(),
+            outcomes: Vec::new(),
         }
     }
+    /// Registers something that happened in the race
+    pub fn register_outcome(&mut self, outcome: Outcome) {
+        self.outcomes.push(outcome);
+    }
+    /// Places a bet for a certain player
     pub fn place(&mut self, bet: Bet, player: &PlayerName) -> Result<Bet, ClashesWithExistingBet> {
         if self.is_bet_valid(&bet, player) {
             self.placed_bets
@@ -71,17 +80,32 @@ impl BettingTable {
 
         Err(ClashesWithExistingBet { existing_bet: bet })
     }
+    /// Get the current results, based on current bets and outcomes
+    pub fn results(&self) -> HashMap<PlayerName, u64> {
+        let mut scores = HashMap::<PlayerName, u64>::new();
+
+        for outcome in &self.outcomes {
+            for (player_name, bets) in self.placed_bets.iter() {
+                for bet in bets {
+                    if bet == &outcome.outcome {
+                        *scores.entry(player_name.clone()).or_insert(0) += outcome.reward;
+                    }
+                }
+            }
+        }
+
+        scores
+    }
     fn is_bet_valid(&self, bet_type: &Bet, player: &PlayerName) -> bool {
         let existing_bets = self.get_bets_for(player);
+        if existing_bets.is_empty() {
+            return true;
+        }
 
         use Bet::*;
         match bet_type {
             FinishPosition { driver, position } => {
-                if existing_bets.is_empty() {
-                    return true;
-                }
-
-                let is_driver_free = existing_bets.iter().any(|x| match *x {
+                let is_driver_free = existing_bets.iter().any(|bet| match *bet {
                     FinishPosition {
                         driver: inner_driver,
                         position: _,
@@ -89,7 +113,7 @@ impl BettingTable {
                     _ => true,
                 });
 
-                let is_position_free = existing_bets.iter().any(|x| match *x {
+                let is_position_free = existing_bets.iter().any(|bet| match *bet {
                     FinishPosition {
                         driver: _,
                         position: inner_position,
@@ -102,10 +126,12 @@ impl BettingTable {
             DoesNotFinish(driver) => !existing_bets
                 .iter()
                 .any(|bet| bet == &DoesNotFinish(*driver)),
-            DriverOfTheDay(driver) => !existing_bets
+            DriverOfTheDay(_driver) => !existing_bets
                 .iter()
-                .any(|bet| bet == &DriverOfTheDay(*driver)),
-            FastestLap(driver) => !existing_bets.iter().any(|bet| bet == &FastestLap(*driver)),
+                .any(|bet| discriminant(bet) == discriminant(&DriverOfTheDay(Driver::MAG))),
+            FastestLap(_driver) => !existing_bets
+                .iter()
+                .any(|bet| discriminant(bet) == discriminant(&FastestLap(Driver::MAG))),
             WillHaveSafetyCar(_val) => {
                 existing_bets
                     .iter()
@@ -126,7 +152,7 @@ impl BettingTable {
 mod tests {
     use super::{Bet, BettingTable};
     use crate::{
-        bets::{errors::ClashesWithExistingBet, PlayerName, Position},
+        bets::{errors::ClashesWithExistingBet, Outcome, PlayerName, Position},
         teams::Driver,
     };
 
@@ -224,5 +250,77 @@ mod tests {
         };
         let result = betting_table.place(third_bet, &player);
         assert!(result.is_ok());
+    }
+    #[test]
+    fn many_players_can_place_many_different_bets_and_scoring_is_correct() {
+        let mut betting_table = BettingTable::new();
+        let michiel = PlayerName::from("michiel");
+        let demi = PlayerName::from("demi");
+
+        let result = betting_table.place(
+            Bet::FinishPosition {
+                driver: Driver::VER,
+                position: Position::new(1),
+            },
+            &demi,
+        );
+        assert!(result.is_ok());
+
+        let result = betting_table.place(
+            Bet::FinishPosition {
+                driver: Driver::VER,
+                position: Position::new(1),
+            },
+            &michiel,
+        );
+        assert!(result.is_ok());
+
+        let result = betting_table.place(
+            Bet::FinishPosition {
+                driver: Driver::HAM,
+                position: Position::new(1),
+            },
+            &demi,
+        );
+        assert!(result.is_err());
+
+        let result = betting_table.place(Bet::WillHaveSafetyCar(true), &demi);
+        assert!(result.is_ok());
+        let result = betting_table.place(Bet::WillHaveSafetyCar(false), &demi);
+        assert!(result.is_err());
+
+        let result = betting_table.place(Bet::FastestLap(Driver::LEC), &demi);
+        assert!(result.is_ok());
+        let result = betting_table.place(Bet::FastestLap(Driver::HAM), &demi);
+        assert!(result.is_err());
+
+        let result = betting_table.place(Bet::DriverOfTheDay(Driver::LEC), &demi);
+        assert!(result.is_ok());
+        let result = betting_table.place(Bet::DriverOfTheDay(Driver::HAM), &demi);
+        assert!(result.is_err());
+
+        betting_table.register_outcome(Outcome {
+            outcome: Bet::FinishPosition {
+                driver: Driver::VER,
+                position: Position::new(1),
+            },
+            reward: 1000,
+        });
+        betting_table.register_outcome(Outcome {
+            outcome: Bet::WillHaveSafetyCar(true),
+            reward: 500,
+        });
+        betting_table.register_outcome(Outcome {
+            outcome: Bet::FastestLap(Driver::LEC),
+            reward: 2500,
+        });
+        betting_table.register_outcome(Outcome {
+            outcome: Bet::DriverOfTheDay(Driver::LEC),
+            reward: 5000,
+        });
+
+        let scores = betting_table.results();
+        assert_eq!(scores.get(&demi).unwrap(), &9000);
+        assert_eq!(scores.get(&michiel).unwrap(), &1000);
     }
 }
