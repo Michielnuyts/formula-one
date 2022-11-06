@@ -3,9 +3,5 @@
 version = 3
 
 [[package]]
-name = "cli"
-version = "0.1.0"
-
-[[package]]
 name = "formula-one"
 version = "0.1.0"
