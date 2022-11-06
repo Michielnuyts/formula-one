@@ -1,36 +1,8 @@
 mod errors;
 
 use self::errors::ClashesWithExistingBet;
-use crate::teams::Driver;
+use crate::{player::Player, race::Position, teams::Driver};
 use std::{collections::HashMap, mem::discriminant};
-
-#[derive(Eq, PartialEq, Clone, Debug, Hash)]
-pub struct Player {
-    name: String,
-    multiplier: u64, // x3, x5, ...
-}
-
-impl Player {
-    pub fn create(name: String, multiplier: Option<u64>) -> Self {
-        Self {
-            name,
-            multiplier: multiplier.unwrap_or(1),
-        }
-    }
-}
-
-/// Position on the race grid, always from 1 up to 20
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub struct Position(u8);
-
-impl Position {
-    pub fn new(position: u8) -> Self {
-        match position {
-            1..=20 => Self(position),
-            _ => panic!("Wrong input for position"),
-        }
-    }
-}
 
 /// Possible things a player can bet on
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
