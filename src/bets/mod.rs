@@ -4,12 +4,19 @@ use self::errors::ClashesWithExistingBet;
 use crate::teams::Driver;
 use std::{collections::HashMap, mem::discriminant};
 
-pub type PlayerName = String;
-
-#[derive(Eq, PartialEq, Clone, Debug)]
+#[derive(Eq, PartialEq, Clone, Debug, Hash)]
 pub struct Player {
-    name: PlayerName,
-    multiplier: u8, // x3, x5, ...
+    name: String,
+    multiplier: u64, // x3, x5, ...
+}
+
+impl Player {
+    pub fn create(name: String, multiplier: Option<u64>) -> Self {
+        Self {
+            name,
+            multiplier: multiplier.unwrap_or(1),
+        }
+    }
 }
 
 /// Position on the race grid, always from 1 up to 20
@@ -50,7 +57,7 @@ pub struct Outcome {
 
 pub struct BettingTable {
     /// The placed bets indexed by the playerName
-    placed_bets: HashMap<PlayerName, Vec<Bet>>,
+    placed_bets: HashMap<Player, Vec<Bet>>,
     /// The eventual outcomes after/during a race
     outcomes: Vec<Outcome>,
 }
@@ -68,7 +75,7 @@ impl BettingTable {
         self.outcomes.push(outcome);
     }
     /// Places a bet for a certain player
-    pub fn place(&mut self, bet: Bet, player: &PlayerName) -> Result<Bet, ClashesWithExistingBet> {
+    pub fn place(&mut self, bet: Bet, player: &Player) -> Result<Bet, ClashesWithExistingBet> {
         if self.is_bet_valid(&bet, player) {
             self.placed_bets
                 .entry(player.clone())
@@ -81,22 +88,27 @@ impl BettingTable {
         Err(ClashesWithExistingBet { existing_bet: bet })
     }
     /// Get the current results, based on current bets and outcomes
-    pub fn results(&self) -> HashMap<PlayerName, u64> {
-        let mut scores = HashMap::<PlayerName, u64>::new();
+    pub fn results(&self) -> HashMap<Player, u64> {
+        let mut scores = HashMap::<Player, u64>::new();
 
         for outcome in &self.outcomes {
-            for (player_name, bets) in self.placed_bets.iter() {
+            for (player, bets) in self.placed_bets.iter() {
                 for bet in bets {
                     if bet == &outcome.outcome {
-                        *scores.entry(player_name.clone()).or_insert(0) += outcome.reward;
+                        *scores.entry(player.clone()).or_insert(0) += outcome.reward;
                     }
                 }
             }
         }
+        // apply multipliers on final scores
+        let scores = scores
+            .iter_mut()
+            .map(|(player, score)| (player.clone(), *score * player.multiplier))
+            .collect();
 
         scores
     }
-    fn is_bet_valid(&self, bet_type: &Bet, player: &PlayerName) -> bool {
+    fn is_bet_valid(&self, bet_type: &Bet, player: &Player) -> bool {
         let existing_bets = self.get_bets_for(player);
         if existing_bets.is_empty() {
             return true;
@@ -143,7 +155,7 @@ impl BettingTable {
             }
         }
     }
-    fn get_bets_for(&self, player: &PlayerName) -> Vec<Bet> {
+    fn get_bets_for(&self, player: &Player) -> Vec<Bet> {
         self.placed_bets.get(player).unwrap_or(&vec![]).clone()
     }
 }
@@ -152,14 +164,14 @@ impl BettingTable {
 mod tests {
     use super::{Bet, BettingTable};
     use crate::{
-        bets::{errors::ClashesWithExistingBet, Outcome, PlayerName, Position},
+        bets::{errors::ClashesWithExistingBet, Outcome, Player, Position},
         teams::Driver,
     };
 
     #[test]
     fn can_place_a_bet() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let bet = Bet::DoesNotFinish(Driver::ALB);
         let result = betting_table.place(bet, &player);
 
@@ -168,7 +180,7 @@ mod tests {
     #[test]
     fn cannot_place_the_same_bet_more_than_once() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let bet = Bet::DoesNotFinish(Driver::ALB);
         let result = betting_table.place(bet, &player);
         // So far so good
@@ -183,7 +195,7 @@ mod tests {
     #[test]
     fn single_player_can_place_multiple_unique_bets() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let first_bet = Bet::DoesNotFinish(Driver::ALB);
 
         let result = betting_table.place(first_bet, &player);
@@ -196,7 +208,7 @@ mod tests {
     #[test]
     fn single_player_can_only_bet_once_on_safety_car() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let first_bet = Bet::WillHaveSafetyCar(true);
 
         let result = betting_table.place(first_bet, &player);
@@ -209,7 +221,7 @@ mod tests {
     #[test]
     fn cannot_bet_on_multiple_finish_positions_for_the_same_driver() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let first_bet = Bet::FinishPosition {
             driver: Driver::HAM,
             position: Position::new(1),
@@ -228,7 +240,7 @@ mod tests {
     #[test]
     fn cannot_bet_on_multiple_finish_positions() {
         let mut betting_table = BettingTable::new();
-        let player = PlayerName::from("Nuyts");
+        let player = Player::create("Nuyts".into(), None);
         let first_bet = Bet::FinishPosition {
             driver: Driver::LEC,
             position: Position::new(1),
@@ -254,8 +266,8 @@ mod tests {
     #[test]
     fn many_players_can_place_many_different_bets_and_scoring_is_correct() {
         let mut betting_table = BettingTable::new();
-        let michiel = PlayerName::from("michiel");
-        let demi = PlayerName::from("demi");
+        let michiel = Player::create("michiel".into(), None);
+        let demi = Player::create("demi".into(), Some(2));
 
         let result = betting_table.place(
             Bet::FinishPosition {
@@ -320,7 +332,7 @@ mod tests {
         });
 
         let scores = betting_table.results();
-        assert_eq!(scores.get(&demi).unwrap(), &9000);
+        assert_eq!(scores.get(&demi).unwrap(), &18000);
         assert_eq!(scores.get(&michiel).unwrap(), &1000);
     }
 }
