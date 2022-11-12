@@ -6,8 +6,24 @@ pub struct Race {
 
 /// Country location of a Grand Prix race
 pub enum Location {
-    USA,
+    Spain,
+    Bahrain,
+    SaudiArabia,
+    Australia,
+    Italy,
+    Monaco,
+    Azerbaijan,
+    Canada,
+    UK,
+    Austria,
+    France,
+    Hungary,
+    Singapore,
+    Japan,
     Mexico,
+    Brazil,
+    AbuDhabi,
+    USA,
     Belgium,
     Netherlands,
 }
